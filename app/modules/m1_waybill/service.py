@@ -99,9 +99,16 @@ def _draft(record: reader.Record, header: list[str], styles: set[str]) -> dict:
     return draft
 
 
-def import_bytes(raw: bytes, name: str) -> dict:
+def import_bytes(raw: bytes, name: str, check_references: bool = True) -> dict:
+    """采信一份运单。
+
+    ``check_references`` 为 False 时不在采信阶段按运价表判定 UNKNOWN_CARRIER /
+    RATE_MISSING，让调用方按自己的范围决定计费与否。两种口径的采信结果不同，因此
+    计入 run_id 身份，避免互相误用缓存。
+    """
     digest = manifest.sha256_bytes(raw)
-    run_id = manifest.make_run_id(digest)
+    variant = "" if check_references else "no-ref"
+    run_id = manifest.make_run_id(digest, variant=variant)
     existing = store.get_run(run_id)
     if existing and int(existing.get("rows_in") or 0) > 0:
         return {
@@ -119,15 +126,16 @@ def import_bytes(raw: bytes, name: str) -> dict:
     text = decode.normalize_newlines(text)
     sheet = reader.read_sheet(text, file_codes)
 
-    keys = rates.key_index()
-    known_carriers = rates.carriers()
+    keys = rates.key_index() if check_references else set()
+    known_carriers = rates.carriers() if check_references else set()
     styles: set[str] = set()
     drafts = [_draft(record, sheet.header, styles) for record in sheet.records]
 
     quality.apply_tz_styles(drafts, styles)
-    for draft in drafts:
-        if not draft["blocks"]:
-            draft["blocks"].extend(quality.check_reference(draft, keys, known_carriers))
+    if check_references:
+        for draft in drafts:
+            if not draft["blocks"]:
+                draft["blocks"].extend(quality.check_reference(draft, keys, known_carriers))
     quality.dedupe(drafts)
 
     good: list[dict] = []
@@ -177,6 +185,7 @@ def import_bytes(raw: bytes, name: str) -> dict:
         "input_sha256": digest,
         "rules_version": config.RULES_VERSION,
         "profile": config.PROFILE,
+        "scope": "preview" if check_references else "close",
         "rows_in": len(sheet.records),
         "rows_ok": len(good),
         "rows_quarantined": quarantined_lines,
@@ -189,6 +198,7 @@ def import_bytes(raw: bytes, name: str) -> dict:
     return {
         "run_id": run_id,
         "reused": False,
+        "scope": "preview" if check_references else "close",
         "rows_in": len(sheet.records),
         "rows_ok": len(good),
         "rows_quarantined": quarantined_lines,

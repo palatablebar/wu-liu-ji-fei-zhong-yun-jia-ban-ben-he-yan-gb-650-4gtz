@@ -17,8 +17,16 @@ def sha256_bytes(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def make_run_id(input_sha256: str, profile: str | None = None) -> str:
+def make_run_id(input_sha256: str, profile: str | None = None,
+                variant: str = "") -> str:
+    """run_id 由输入字节、规则版本、参数档位与采信口径共同决定。
+
+    ``variant`` 区分同一份字节在不同采信口径下的结果（例如是否按运价表做引用
+    校验），保证两种口径不会误用彼此的缓存。
+    """
     seed = f"{input_sha256}|{config.RULES_VERSION}|{profile or config.PROFILE}"
+    if variant:
+        seed += f"|{variant}"
     return "RUN-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12].upper()
 
 

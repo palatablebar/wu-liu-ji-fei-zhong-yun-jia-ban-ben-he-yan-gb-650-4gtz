@@ -11,6 +11,32 @@ from app.modules.m2_rates import version as rateversion
 from app.modules.m4_weights import billable, rounding, volumetric
 
 
+def price_weight(row: dict, card: dict) -> dict:
+    """纯计价重：给定运单行与已选版本，算出实重、体积重、计费重与段数。
+
+    M4 预览与 M8 正式账单共用这一份规则，避免两处各算一套。
+    """
+    actual = Decimal(row["weight_kg"])
+    volume = volumetric.volumetric_kg(
+        Decimal(row["length_cm"]),
+        Decimal(row["width_cm"]),
+        Decimal(row["height_cm"]),
+        int(card["volume_divisor"]),
+    )
+    raw, source = billable.pick(actual, volume)
+    step = Decimal(card["step_weight_kg"])
+    billable_kg = rounding.ceil_to_step(raw, step)
+    steps = rounding.steps_above(billable_kg, Decimal(card["first_weight_kg"]), step)
+    return {
+        "actual_kg": str(actual),
+        "volumetric_kg": str(volume),
+        "source": source,
+        "billable_kg": str(billable_kg),
+        "steps": steps,
+        "codes": billable.source_codes(source),
+    }
+
+
 def compute_weights(run_id: str) -> dict:
     run = store.get_run(run_id)
     if not run:
@@ -39,26 +65,16 @@ def compute_weights(run_id: str) -> dict:
             })
             continue
 
-        actual = Decimal(row["weight_kg"])
-        volume = volumetric.volumetric_kg(
-            Decimal(row["length_cm"]),
-            Decimal(row["width_cm"]),
-            Decimal(row["height_cm"]),
-            int(card["volume_divisor"]),
-        )
-        raw, source = billable.pick(actual, volume)
-        step = Decimal(card["step_weight_kg"])
-        billable_kg = rounding.ceil_to_step(raw, step)
-        steps = rounding.steps_above(billable_kg, Decimal(card["first_weight_kg"]), step)
+        priced = price_weight(row, card)
         lines.append({
             "waybill_no": row["waybill_no"],
             "version_id": card["version_id"],
-            "actual_kg": str(actual),
-            "volumetric_kg": str(volume),
-            "source": source,
-            "billable_kg": str(billable_kg),
-            "steps": steps,
-            "codes": ",".join(billable.source_codes(source)),
+            "actual_kg": priced["actual_kg"],
+            "volumetric_kg": priced["volumetric_kg"],
+            "source": priced["source"],
+            "billable_kg": priced["billable_kg"],
+            "steps": priced["steps"],
+            "codes": ",".join(priced["codes"]),
         })
 
     store.replace_weight_lines(run_id, lines)

@@ -19,6 +19,8 @@ from app.modules.m5_charges import service as charge_service
 from app.modules.m5_charges.handler import router as charges_router
 from app.modules.m6_reconcile.handler import router as reconcile_router
 from app.modules.m7_export.handler import router as export_router
+from app.modules.m8_close import service as close_service
+from app.modules.m8_close.handler import router as close_router
 
 
 def bootstrap() -> dict:
@@ -35,7 +37,8 @@ def bootstrap() -> dict:
         row = store.get_run(run_id) or {}
         if "charges" not in (row.get("stages") or ""):
             charge_service.compute_charges(run_id)
-    return {"rates": seeded, "run": run}
+    close_seeded = close_service.seed_sample()
+    return {"rates": seeded, "run": run, "close": close_seeded}
 
 
 @asynccontextmanager
@@ -56,6 +59,7 @@ for router in (
     charges_router,
     reconcile_router,
     export_router,
+    close_router,
 ):
     app.include_router(router)
 

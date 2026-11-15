@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}月结出账{% endblock %}
+{% block body %}
+<section class="head">
+  <h1>月结出账</h1>
+  <p class="meta">
+    关账期 {{ period }} · 运价 {{ summary.scope.rate_card_count or 0 }} 行
+    · 本期运单 {{ summary.scope.waybills or 0 }} 票
+    · 补发覆盖 {{ summary.scope.superseded or 0 }} · 超范围 {{ summary.scope.excluded or 0 }}
+    · 隔离 {{ summary.scope.quarantine or 0 }}
+  </p>
+  <p class="meta">
+    正式版本
+    {% if summary.official %}
+      <b class="mono">{{ summary.official.version_id }}</b>
+      <span class="badge badge-ok">已发布</span>
+      · 发布 {{ summary.official.published_at|local }}
+    {% else %}
+      <span class="badge badge-bad">未发布</span>
+    {% endif %}
+  </p>
+</section>
+
+<div class="rule-line">{{ rule(200) }}</div>
+
+<section class="block">
+  <h2>关账期</h2>
+  <form class="cmd" method="get" action="/close">
+    <label class="field"><span>期（YYYY-MM）</span>
+      <input type="text" name="period" value="{{ period }}" placeholder="2026-04">
+    </label>
+    <button type="submit" class="btn btn-ghost">切换</button>
+  </form>
+  <p class="meta">提货时刻按 {{ display_tz }} 落月。补发运价只影响本期，不改历史正式版本。</p>
+  {% if period_error %}
+  <p class="meta err">期格式不对：{{ period_error }}，已回落到 {{ period }}。</p>
+  {% endif %}
+</section>
+
+<div class="rule-line">{{ rule(200) }}</div>
+
+<section class="block">
+  <h2>补发登记</h2>
+  <form class="cmd" data-post="/api/close/rates" data-target="#close-out" data-reload="1">
+    <input type="hidden" name="period" value="{{ period }}">
+    <label class="field"><span>运价文件</span><input type="file" name="file" accept=".csv"></label>
+    <button type="submit" class="btn">登记运价</button>
+    <span class="dim">重叠、陈旧、缺列一律拒绝登记，现有范围不动</span>
+  </form>
+  <form class="cmd" data-post="/api/close/waybills" data-target="#close-out" data-reload="1">
+    <input type="hidden" name="period" value="{{ period }}">
+    <label class="field"><span>运单文件</span><input type="file" name="file" accept=".csv"></label>
+    <button type="submit" class="btn">登记运单</button>
+    <span class="dim">同一文件只登记一次；晚到运单会覆盖同票旧值，旧值进证据</span>
+  </form>
+  <form class="cmd" data-post="/api/close/build" data-target="#close-out" data-reload="1">
+    <input type="hidden" name="period" value="{{ period }}">
+    <label class="field"><span>版次说明</span><input type="text" name="note" value=""></label>
+    <button type="submit" class="btn">生成待复核版本</button>
+    <span class="dim">相同输入返回同一版本，不新增、不重复出账</span>
+  </form>
+  <pre id="close-out" class="out">待操作</pre>
+</section>
+
+<div class="rule-line">{{ rule(200) }}</div>
+
+<section class="block">
+  <h2>版本</h2>
+  {% if summary.versions %}
+  <table class="grid">
+    <thead>
+      <tr><th>版本</th><th>状态</th><th>基线</th><th class="num">计费</th><th class="num">未计费</th>
+        <th class="num">回收</th><th class="num">超范围</th><th class="num">应收</th><th>四账</th>
+        <th>影响指纹</th><th>创建</th></tr>
+    </thead>
+    <tbody>
+      {% for version in summary.versions %}
+      <tr class="{{ 'flag-bad' if version.state == 'draft' }}">
+        <td class="mono">{{ version.version_id }}{% if version.is_official %} <span class="badge badge-ok">正式</span>{% endif %}</td>
+        <td class="mono">{{ version.state }}</td>
+        <td class="mono dim">{{ version.baseline_version_id or "—" }}</td>
+        <td class="num">{{ version.billed_count }}</td>
+        <td class="num">{{ version.unbilled_count }}</td>
+        <td class="num">{{ version.superseded_count }}</td>
+        <td class="num">{{ version.excluded_count }}</td>
+        <td class="num">{{ version.amount_total|money }}</td>
+        <td>{% if version.balanced %}<span class="badge badge-ok">平</span>{% else %}<span class="badge badge-bad">差</span>{% endif %}</td>
+        <td class="mono dim">{{ version.impact_digest[:12] }}</td>
+        <td class="mono dim">{{ version.created_at|local }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">还没有版本，先登记运价与运单再生成。</p>
+  {% endif %}
+</section>
+
+{% if effective %}
+<div class="rule-line">{{ rule(200) }}</div>
+
+<section class="block">
+  <h2>补发影响 · {{ effective.version_id }}</h2>
+  <p class="meta">
+    状态 <span class="mono">{{ effective.state }}</span>
+    {% if effective.is_official is defined and effective.is_official %}<span class="badge badge-ok">正式</span>{% endif %}
+    {% if official and effective.version_id != official.version_id %}
+      <span class="badge badge-bad">待复核</span> —— 正式版仍是 <span class="mono">{{ official.version_id }}</span>
+    {% endif %}
+  </p>
+  {% if impact %}
+  <p class="meta">
+    对比基线 <span class="mono">{{ impact.baseline_version_id or "无（首版）" }}</span>
+    · 改变 {{ impact.groups|sum(attribute='count') if impact.groups else 0 }} 票
+    · 未变 {{ impact.unchanged }} 票
+    · 应收差 <b class="num">{{ impact.totals.delta_total|money }}</b> 元
+    · 计费重差 {{ impact.totals.delta_billable_kg }} kg
+  </p>
+  {% if impact.groups %}
+  {% for group in impact.groups %}
+  <h3>{{ group.label }} · {{ group.count }} 票</h3>
+  <table class="grid">
+    <thead>
+      <tr><th>运单号</th><th>变化</th><th>版本</th><th class="num">旧计费重</th><th class="num">新计费重</th>
+        <th class="num">旧应收</th><th class="num">新应收</th><th class="num">差额</th><th>变动分项</th></tr>
+    </thead>
+    <tbody>
+      {% for row in group.waybills %}
+      <tr>
+        <td class="mono">{{ row.waybill_no }}</td>
+        <td class="mono">{{ row.change }}</td>
+        <td class="mono dim">{{ row.old_version_id or "—" }} → {{ row.new_version_id or "—" }}</td>
+        <td class="num">{{ row.old_billable_kg or "—" }}</td>
+        <td class="num">{{ row.new_billable_kg or "—" }}</td>
+        <td class="num">{{ row.old_total|money }}</td>
+        <td class="num">{{ row.new_total|money }}</td>
+        <td class="num strong">{{ row.delta_total|money }}</td>
+        <td class="mono dim">{{ row.changed_parts }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endfor %}
+  {% else %}
+  <p class="empty">与基线相比没有账单变化。</p>
+  {% endif %}
+
+  <h3>范围事件</h3>
+  <table class="grid">
+    <thead><tr><th>类型</th><th>运单号</th><th>来源</th><th class="num">行</th><th>原因码</th><th>明细</th></tr></thead>
+    <tbody>
+      {% for row in impact.new_superseded %}
+      <tr><td>被补发覆盖</td><td class="mono">{{ row.waybill_no }}</td><td class="mono dim">{{ row.run_id }}</td>
+        <td class="num">{{ row.line_no }}</td><td class="mono">{{ row.code }}</td><td class="mono dim">{{ row.detail }}</td></tr>
+      {% endfor %}
+      {% for row in impact.new_excluded %}
+      <tr><td>超范围</td><td class="mono">{{ row.waybill_no }}</td><td class="mono dim">{{ row.run_id }}</td>
+        <td class="num">{{ row.line_no }}</td><td class="mono">{{ row.code }}</td><td class="mono dim">{{ row.detail }}</td></tr>
+      {% endfor %}
+      {% for row in impact.new_quarantine %}
+      <tr><td>隔离</td><td class="mono">{{ row.waybill_no or "—" }}</td><td class="mono dim">{{ row.run_id }}</td>
+        <td class="num">{{ row.line_no }}</td><td class="mono">{{ row.code }}</td><td class="mono dim">{{ row.detail }}</td></tr>
+      {% endfor %}
+      {% if not (impact.new_superseded or impact.new_excluded or impact.new_quarantine) %}
+      <tr><td colspan="6" class="dim">没有新的范围事件。</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if effective.state == 'draft' %}
+  <h3>复核</h3>
+  <form class="cmd" data-post="/api/close/versions/{{ effective.version_id }}/review" data-target="#review-out" data-reload="1">
+    <label class="field"><span>复核人</span><input type="text" name="reviewer" value=""></label>
+    <label class="field"><span>意见</span><input type="text" name="note" value=""></label>
+    <button type="submit" class="btn">登记复核</button>
+  </form>
+  <form class="cmd" data-post="/api/close/versions/{{ effective.version_id }}/publish" data-target="#review-out" data-reload="1">
+    <label class="field"><span>复核人</span><input type="text" name="reviewer" value=""></label>
+    <label class="field"><span>意见</span><input type="text" name="note" value=""></label>
+    <button type="submit" class="btn">复核通过并切换正式版</button>
+    <span class="dim">原子切换；旧正式版整份保留</span>
+  </form>
+  <p class="meta">已登记复核 {{ impact.reviews|length if impact else 0 }} 条；绑定影响指纹 <span class="mono">{{ (impact.impact_digest if impact else "")[:16] }}</span></p>
+  <pre id="review-out" class="out">待复核</pre>
+  {% else %}
+  <p class="meta">版本状态 <span class="mono">{{ effective.state }}</span>，正式账单已从此快照导出。</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<div class="rule-line">{{ rule(200) }}</div>
+
+<section class="block">
+  <h2>正式导出</h2>
+  <ul class="links">
+    <li><a href="/api/close/official/invoice.csv?period={{ period }}">正式账单 CSV</a><span class="dim mono">仅正式版本</span></li>
+    <li><a href="/api/close/official/evidence.csv?period={{ period }}">正式证据 CSV</a><span class="dim mono">含覆盖、超范围、隔离证据</span></li>
+    <li><a href="/api/close/official/manifest.json?period={{ period }}">正式清单 JSON</a><span class="dim mono">来源、指纹、四账</span></li>
+  </ul>
+  {% if effective %}
+  <h3>当前预览版本 {{ effective.version_id }}</h3>
+  <ul class="links">
+    <li><a href="{{ export_urls.invoice }}">账单 CSV</a><span class="dim mono">invoice.csv</span></li>
+    <li><a href="{{ export_urls.evidence }}">证据 CSV</a><span class="dim mono">evidence.csv</span></li>
+    <li><a href="{{ export_urls.impact }}">补发影响 CSV</a><span class="dim mono">impact.csv</span></li>
+    <li><a href="{{ export_urls.manifest }}">清单 JSON</a><span class="dim mono">manifest.json</span></li>
+  </ul>
+  {% endif %}
+</section>
+
+<div class="rule-line">{{ rule(200) }}</div>
+
+{% if effective %}
+<section class="block">
+  <h2>四账 · {{ effective.version_id }}</h2>
+  {% if accounts %}
+  {% for account in accounts %}
+  <section class="block account {{ 'ok' if account.balanced else 'bad' }}">
+    <h3>{{ account.title }}</h3>
+    <div class="account-line">
+      <span class="account-left">{{ account.left_label }}</span>
+      <span class="num strong">{{ account.left_value|money if account.unit == "元" else account.left_value }}</span>
+      <span class="tick">=</span>
+      {% for part in account.parts %}
+        <span class="chip">{{ part.label }} <b class="num">{{ part.value|money if account.unit == "元" else part.value }}</b></span>
+        {% if not loop.last %}<span class="tick">+</span>{% endif %}
+      {% endfor %}
+      <span class="badge {{ 'badge-ok' if account.balanced else 'badge-bad' }}">{{ "平" if account.balanced else "差" }}</span>
+    </div>
+  </section>
+  {% endfor %}
+  {% else %}
+  <p class="empty">清单里没有四账。</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

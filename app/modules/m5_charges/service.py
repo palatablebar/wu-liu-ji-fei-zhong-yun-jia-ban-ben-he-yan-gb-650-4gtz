@@ -13,6 +13,36 @@ from app.modules.m5_charges import addon, money, zone
 from app.reasons import sort_codes
 
 
+def price_charge(declared_value, steps: int, card: dict) -> dict:
+    """纯计价：给定声明价值、段数与已选版本，算出五个分项与应收。
+
+    M5 预览与 M8 正式账单共用这一份规则，避免两处各算一套。
+    """
+    first = zone.first_amount(card)
+    step_part = zone.step_amount(steps, card)
+    topup = zone.min_topup(first + step_part, card)
+    base = money.q2(first + topup)
+    remote = addon.remote_amount(card)
+    fuel = addon.fuel_amount(base, step_part, card)
+    insurance = addon.insurance_amount(Decimal(declared_value), card)
+    amount = money.total([base, step_part, remote, fuel, insurance])
+    codes: list[str] = []
+    if topup > 0:
+        codes.append("MIN_CHARGE_APPLIED")
+    if remote > 0:
+        codes.append("ZONE_REMOTE")
+    return {
+        "base_amount": str(base),
+        "step_amount": str(step_part),
+        "remote_amount": str(remote),
+        "fuel_amount": str(fuel),
+        "insurance_amount": str(insurance),
+        "total_amount": str(amount),
+        "codes": codes,
+        "topup": topup,
+    }
+
+
 def compute_charges(run_id: str) -> dict:
     run = store.get_run(run_id)
     if not run:
@@ -36,34 +66,21 @@ def compute_charges(run_id: str) -> dict:
         )
         if card is None:
             continue
-        steps = int(weight["steps"])
-        first = zone.first_amount(card)
-        step_part = zone.step_amount(steps, card)
-        topup = zone.min_topup(first + step_part, card)
-        base = money.q2(first + topup)
-        remote = addon.remote_amount(card)
-        fuel = addon.fuel_amount(base, step_part, card)
-        declared = Decimal(waybill["declared_value"])
-        insurance = addon.insurance_amount(declared, card)
-        amount = money.total([base, step_part, remote, fuel, insurance])
+        priced = price_charge(waybill["declared_value"], int(weight["steps"]), card)
 
-        row_codes = list(codes)
-        if topup > 0:
-            row_codes.append("MIN_CHARGE_APPLIED")
-        if remote > 0:
-            row_codes.append("ZONE_REMOTE")
+        row_codes = list(codes) + list(priced["codes"])
         if weight["source"] == billable.VOLUMETRIC:
             row_codes.append("VOLUMETRIC_APPLIED")
 
         lines.append({
             "waybill_no": weight["waybill_no"],
             "version_id": weight["version_id"],
-            "base_amount": str(base),
-            "step_amount": str(step_part),
-            "remote_amount": str(remote),
-            "fuel_amount": str(fuel),
-            "insurance_amount": str(insurance),
-            "total_amount": str(amount),
+            "base_amount": priced["base_amount"],
+            "step_amount": priced["step_amount"],
+            "remote_amount": priced["remote_amount"],
+            "fuel_amount": priced["fuel_amount"],
+            "insurance_amount": priced["insurance_amount"],
+            "total_amount": priced["total_amount"],
             "codes": ",".join(sort_codes(row_codes)),
         })
 
